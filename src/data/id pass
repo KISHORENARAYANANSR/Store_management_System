@@ -1,0 +1,22 @@
+xxbwotrbsczgsvue
+
+the above is the password of the app which is used to send the mail
+
+
+
+            <option value="" disabled>Select Zone</option>
+            <option value="Zone 1">Trim-A</option>
+            <option value="Zone 2">Trim-B</option>
+            <option value="Zone 3">Under Floor</option>
+            <option value="Zone 4">Chassis Trim</option>
+            <option value="Zone 5">Pre Final</option>
+            <option value="Zone 6">Door Sub</option>
+            <option value="Zone 7">Engine Sub</option>
+            <option value="Zone 8">Cubs</option>
+            <option value="Zone 9">CPM</option>
+            <option value="Zone 10">Secondary Logistics</option>
+            <option value="Zone 11">Final Line</option>
+            <option value="Zone 12">EQ - Paint</option>
+            <option value="Zone 13">EQ - Body</option>
+            <option value="Zone 14">VQA</option>
+          </select>
