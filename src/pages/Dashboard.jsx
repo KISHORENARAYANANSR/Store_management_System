@@ -17,11 +17,7 @@ import { products } from "../data/products";
 import { useNavigate } from "react-router-dom";
 
 export default function ManagerDashboard() {
-  const [orders, setOrders] = useState(() => {
-    const saved = localStorage.getItem("orders");
-    console.log("🔄 Loading orders from localStorage:", saved ? JSON.parse(saved).length : 0);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [orders, setOrders] = useState([]);
   
   const [filterVisible, setFilterVisible] = useState(false);
   
@@ -77,15 +73,6 @@ export default function ManagerDashboard() {
 
   const [rfidInput, setRfidInput] = useState("");
   const [waitingForRfid, setWaitingForRfid] = useState(null);
-  const [receivedBy, setReceivedBy] = useState(() => {
-    const saved = localStorage.getItem("receivedBy");
-    return saved ? JSON.parse(saved) : {};
-  });
-
-  const [collectionHistory, setCollectionHistory] = useState(() => {
-    const saved = localStorage.getItem("collectionHistory");
-    return saved ? JSON.parse(saved) : {};
-  });
 
   const [rfidData, setRfidData] = useState(() => {
     const saved = localStorage.getItem("rfidData");
@@ -101,11 +88,19 @@ export default function ManagerDashboard() {
 
   const navigate = useNavigate();
 
-  useEffect(() => {
-    console.log("💾 Saving orders to localStorage:", orders.length, "orders");
-    localStorage.setItem("orders", JSON.stringify(orders));
-  }, [orders]);
+  // Helper function to format date
+  const formatDate = (dateStr) => {
+    if (!dateStr) return "N/A";
+    const date = new Date(dateStr);
+    if (isNaN(date)) return "N/A";
+    return date.toLocaleDateString('en-IN', { 
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit' 
+    });
+  };
 
+  // Save filter states to localStorage
   useEffect(() => {
     localStorage.setItem("filterDate", filterDate);
   }, [filterDate]);
@@ -145,16 +140,6 @@ export default function ManagerDashboard() {
   }, [cpuTarget]);
 
   useEffect(() => {
-    console.log("💾 Saving receivedBy to localStorage:", receivedBy);
-    localStorage.setItem("receivedBy", JSON.stringify(receivedBy));
-  }, [receivedBy]);
-
-  useEffect(() => {
-    console.log("💾 Saving collectionHistory to localStorage:", collectionHistory);
-    localStorage.setItem("collectionHistory", JSON.stringify(collectionHistory));
-  }, [collectionHistory]);
-
-  useEffect(() => {
     localStorage.setItem("rfidData", JSON.stringify(rfidData));
   }, [rfidData]);
 
@@ -166,8 +151,29 @@ export default function ManagerDashboard() {
     localStorage.setItem("zoneWiseCpuData", JSON.stringify(zoneWiseCpuData));
   }, [zoneWiseCpuData]);
 
+  // Fetch orders from backend
+  const fetchOrdersFromBackend = async () => {
+    try {
+      const res = await fetch("http://localhost:5000/api/orders");
+      if (res.ok) {
+        const backendOrders = await res.json();
+        console.log("📦 Orders from backend:", backendOrders.length);
+        setOrders(backendOrders);
+      }
+    } catch (err) {
+      console.log("❌ Backend not available, no orders loaded");
+      setOrders([]);
+    }
+  };
+
+  // Initial fetch of orders
   useEffect(() => {
-    const handleKeyPress = (e) => {
+    fetchOrdersFromBackend();
+  }, []);
+
+  // RFID Scanner listener
+  useEffect(() => {
+    const handleKeyPress = async (e) => {
       if (!waitingForRfid) return;
 
       if (e.key === "Enter") {
@@ -184,24 +190,34 @@ export default function ManagerDashboard() {
           
           const order = orders.find(o => o.id === waitingForRfid);
           const collectionType = order?.status === "Partial" ? "Partial" : "Full";
-          const timestamp = new Date().toLocaleString();
           
-          setCollectionHistory(prev => ({
-            ...prev,
-            [waitingForRfid]: [
-              ...(prev[waitingForRfid] || []),
-              {
+          try {
+            // Save to database
+            const response = await fetch(`http://localhost:5000/api/order/${waitingForRfid}/collection`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
                 collectedBy: displayText,
-                type: collectionType,
-                timestamp: timestamp
-              }
-            ]
-          }));
+                collectionType: collectionType
+              })
+            });
+
+            if (!response.ok) {
+              throw new Error('Failed to save collection');
+            }
+
+            console.log(`✅ Collection saved to database for order ${waitingForRfid}`);
+            
+            // Refresh orders from backend to get updated collection history
+            await fetchOrdersFromBackend();
+            
+          } catch (err) {
+            console.error("❌ Error saving collection:", err);
+            alert("Failed to save collection data. Please try again.");
+          }
           
-          setReceivedBy(prev => ({
-            ...prev,
-            [waitingForRfid]: displayText
-          }));
           setWaitingForRfid(null);
           setRfidInput("");
         }
@@ -216,45 +232,6 @@ export default function ManagerDashboard() {
     }
   }, [waitingForRfid, rfidInput, rfidData, orders]);
 
-  useEffect(() => {
-    const fetchOrders = async () => {
-      try {
-        const res = await fetch("http://localhost:5000/api/orders");
-        if (res.ok) {
-          const backendOrders = await res.json();
-          if (backendOrders && backendOrders.length > 0) {
-
-            setOrders(prevOrders => {
-              const existingOrdersMap = new Map();
-
-              prevOrders.forEach(o => {
-                if (o.id != null) existingOrdersMap.set(o.id.toString(), o);
-              });
-
-              backendOrders.forEach(o => {
-                if (o.id != null && !existingOrdersMap.has(o.id.toString())) {
-                  existingOrdersMap.set(o.id.toString(), {
-                    ...o,
-                    date: o.userDetails?.date || o.userDetails?.orderDate || o.date || new Date().toISOString().split('T')[0],
-                    status: "Pending",
-                    deliveredItems: []
-                  });
-                }
-              });
-
-              return Array.from(existingOrdersMap.values());
-            });
-          }
-        }
-      } catch (err) {
-        console.log("ℹ️ Backend not available, using localStorage data only");
-      }
-    };
-
-    const timer = setTimeout(fetchOrders, 300);
-    return () => clearTimeout(timer);
-  }, []);
-
   const getCategoryForPartNumber = (partNumber) => {
     const product = products.find(
       (p) => p.partNumber.trim().toLowerCase() === partNumber.trim().toLowerCase()
@@ -264,98 +241,130 @@ export default function ManagerDashboard() {
 
   const openPopup = (order) => {
     const initialQuantities = {};
-    (order.deliveredItems || []).forEach((item) => {
+    order.cart.forEach((item) => {
       const uniqueKey = `${item.partNumber}_${item.id}`;
-      initialQuantities[uniqueKey] = item.deliveredQty || 0;
+      
+      // Check if there's already delivered quantity from database
+      const deliveredItem = (order.deliveredItems || []).find(
+        di => di.partNumber === item.partNumber && di.id === item.id
+      );
+      
+      initialQuantities[uniqueKey] = deliveredItem ? deliveredItem.deliveredQty : 0;
     });
     setDeliveredQuantities(initialQuantities);
     setPopupOrder(order);
   };
 
-  const updateStatus = (id, reject = false) => {
+  const updateStatus = async (id, reject = false) => {
     console.log("🔄 Updating order status:", id, reject ? "Reject" : "Approve");
     
-    const updated = orders.map((o) => {
-      if (o.id !== id) return o;
+    try {
       if (reject) {
-        console.log("❌ Rejecting order:", id);
-        return { ...o, status: "Rejected" };
-      }
-
-      const allDelivered = o.cart.every((item) => {
-        const uniqueKey = `${item.partNumber}_${item.id}`;
-        const delivered = deliveredQuantities[uniqueKey] || 0;
-        return delivered === item.quantity;
-      });
-
-      const status = allDelivered ? "Delivered" : "Partial";
-      console.log("✅ Setting order status to:", status);
-
-      const deliveredItems = o.cart.map((item) => {
-        const uniqueKey = `${item.partNumber}_${item.id}`;
-        return {
-          id: item.id,
-          partNumber: item.partNumber,
-          deliveredQty: deliveredQuantities[uniqueKey] || 0,
-        };
-      });
-
-      return { ...o, status, deliveredItems };
-    });
-
-    console.log("💾 Updated orders array:", updated.length);
-    setOrders(updated);
-
-    if (!reject) {
-      try {
-        const stockRaw = localStorage.getItem("savedStockData");
-        let stockData = stockRaw ? JSON.parse(stockRaw) : [];
-
-        const approvedOrder = updated.find((o) => o.id === id);
-        if (approvedOrder && approvedOrder.deliveredItems) {
-          console.log("📦 Updating stock for delivered items");
-          
-          approvedOrder.deliveredItems.forEach((delItem) => {
-            if (!delItem.partNumber || delItem.deliveredQty <= 0) return;
-
-            const index = stockData.findIndex(
-              (s) => s.partNumber.toLowerCase() === delItem.partNumber.toLowerCase()
-            );
-
-            if (index !== -1) {
-              const previousStock = stockData[index].currentStock;
-              stockData[index].currentStock = Math.max(
-                0,
-                stockData[index].currentStock - delItem.deliveredQty
-              );
-              console.log(`📉 ${delItem.partNumber}: ${previousStock} → ${stockData[index].currentStock} (delivered: ${delItem.deliveredQty})`);
-            } else {
-              const product = products.find(
-                (p) => p.partNumber.toLowerCase() === delItem.partNumber.toLowerCase()
-              );
-              if (product) {
-                stockData.push({
-                  partNumber: product.partNumber,
-                  productName: product.description,
-                  currentStock: 0,
-                });
-                console.log(`⚠️ ${delItem.partNumber} not in stock, added with 0 quantity`);
-              }
-            }
-          });
-
-          localStorage.setItem("savedStockData", JSON.stringify(stockData));
-          console.log("✅ Stock updated successfully after delivery");
-          
-          window.dispatchEvent(new Event('stockUpdated'));
+        // Use existing decline endpoint
+        const response = await fetch(`http://localhost:5000/api/order/${id}/decline`);
+        if (!response.ok) {
+          throw new Error('Failed to decline order');
         }
-      } catch (err) {
-        console.error("❌ Error updating stock:", err);
-      }
-    }
+        console.log(`❌ Order ${id} declined`);
+        
+        // Refresh orders from backend
+        await fetchOrdersFromBackend();
+      } else {
+        // For approval with delivery
+        const order = orders.find(o => o.id === id);
+        if (!order) {
+          console.error("❌ Order not found for approval");
+          return;
+        }
 
-    setPopupOrder(null);
-    setDeliveredQuantities({});
+        // Prepare delivered items data
+        const deliveredItems = order.cart.map((item) => {
+          const uniqueKey = `${item.partNumber}_${item.id}`;
+          const deliveredQty = deliveredQuantities[uniqueKey] || 0;
+          
+          return {
+            partNumber: item.partNumber,
+            description: item.description,
+            quantity: item.quantity,
+            deliveredQty: deliveredQty,
+            id: item.id
+          };
+        });
+
+        // Calculate if all items are delivered
+        const allDelivered = deliveredItems.every(item => item.deliveredQty === item.quantity);
+        const status = allDelivered ? "Delivered" : "Partial";
+        
+        // Save delivery to database
+        const deliveryResponse = await fetch(`http://localhost:5000/api/order/${id}/deliver`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            deliveredItems: deliveredItems,
+            status: status
+          })
+        });
+
+        if (!deliveryResponse.ok) {
+          throw new Error('Failed to save delivery');
+        }
+
+        console.log(`✅ Order ${id} delivery saved with status: ${status}`);
+        
+        // Update stock locally
+        updateStockLocally(order, deliveredQuantities);
+        
+        // Refresh orders from backend
+        await fetchOrdersFromBackend();
+      }
+      
+    } catch (err) {
+      console.error("❌ Error updating order status:", err);
+      alert("Failed to update order status. Please try again.");
+    } finally {
+      setPopupOrder(null);
+      setDeliveredQuantities({});
+    }
+  };
+
+  // Helper function to update stock in localStorage
+  const updateStockLocally = (order, deliveredQuantities) => {
+    try {
+      const stockRaw = localStorage.getItem("savedStockData");
+      let stockData = stockRaw ? JSON.parse(stockRaw) : [];
+
+      if (order && order.cart) {
+        console.log("📦 Updating stock for delivered items");
+        
+        order.cart.forEach((item) => {
+          const uniqueKey = `${item.partNumber}_${item.id}`;
+          const deliveredQty = deliveredQuantities[uniqueKey] || 0;
+          
+          if (!item.partNumber || deliveredQty <= 0) return;
+
+          const index = stockData.findIndex(
+            (s) => s.partNumber.toLowerCase() === item.partNumber.toLowerCase()
+          );
+
+          if (index !== -1) {
+            const previousStock = stockData[index].currentStock;
+            stockData[index].currentStock = Math.max(
+              0,
+              stockData[index].currentStock - deliveredQty
+            );
+            console.log(`📉 ${item.partNumber}: ${previousStock} → ${stockData[index].currentStock} (delivered: ${deliveredQty})`);
+          }
+        });
+
+        localStorage.setItem("savedStockData", JSON.stringify(stockData));
+        console.log("✅ Stock updated successfully after delivery");
+        window.dispatchEvent(new Event('stockUpdated'));
+      }
+    } catch (err) {
+      console.error("❌ Error updating stock:", err);
+    }
   };
 
   const handleExcelUpload = (e) => {
@@ -531,7 +540,7 @@ export default function ManagerDashboard() {
   };
 
   const totalOrders = orders.length;
-  const pending = orders.filter((o) => o.status === "Pending").length;
+  const pending = orders.filter((o) => o.status === "Pending" || o.status === "Approved").length;
   const delivered = orders.filter((o) => o.status === "Delivered").length;
   const rejected = orders.filter((o) => o.status === "Rejected").length;
   const partial = orders.filter((o) => o.status === "Partial").length;
@@ -689,7 +698,9 @@ export default function ManagerDashboard() {
 
   const filteredOrders = orders.filter((o) => {
     const orderDate = o.date || o.userDetails?.date || o.userDetails?.orderDate;
-    const dateMatch = filterDate ? orderDate === filterDate : true;
+    const formattedOrderDate = formatDate(orderDate);
+    const formattedFilterDate = formatDate(filterDate);
+    const dateMatch = filterDate ? formattedOrderDate === formattedFilterDate : true;
     const statusMatch = filterStatus === "All" ? true : o.status === filterStatus;
     
     const categoryMatch = filterCategory === "All" ? true : 
@@ -708,9 +719,8 @@ export default function ManagerDashboard() {
       o.cart.map((i) => {
         const productInfo = products.find((p) => p.partNumber === i.partNumber);
         
-        const uniqueKey = `${i.partNumber}_${i.id}`;
+        // Get issued quantity from deliveredItems
         let issuedQty = 0;
-        
         if (o.deliveredItems && o.deliveredItems.length > 0) {
           const deliveredItem = o.deliveredItems.find(
             (di) => di.partNumber === i.partNumber && di.id === i.id
@@ -720,18 +730,17 @@ export default function ManagerDashboard() {
           }
         }
         
-        const collectionInfo = collectionHistory[o.id] 
-          ? collectionHistory[o.id].map(entry => 
-              `${entry.type}: ${entry.collectedBy} (${entry.timestamp})`
-            ).join(" | ")
-          : "N/A";
+        // Get collection history
+        const collectionInfo = (o.collectionHistory || [])
+          .map(entry => `${entry.type}: ${entry.collectedBy} (${entry.timestamp})`)
+          .join(" | ") || "N/A";
         
         return {
           Employee: o.userDetails?.name || "N/A",
           EmpID: o.userDetails?.empId || "N/A",
           Department: o.userDetails?.dept || "N/A",
           Zone: o.userDetails?.zone || "N/A",
-          Date: o.date || o.userDetails?.date || o.userDetails?.orderDate || "N/A",
+          Date: formatDate(o.date || o.userDetails?.date || o.userDetails?.orderDate),
           Category: getCategoryForPartNumber(i.partNumber),
           PartNumber: i.partNumber,
           Description: i.description,
@@ -753,16 +762,10 @@ export default function ManagerDashboard() {
   };
 
   const hasFullCollection = (orderId) => {
-    const history = collectionHistory[orderId];
+    const order = orders.find(o => o.id === orderId);
+    const history = order?.collectionHistory;
     if (!history || history.length === 0) return false;
     return history.some(entry => entry.type === "Full");
-  };
-
-  const handleZoneCpuUpdate = (zone, volume, target) => {
-    setZoneWiseCpuData(prev => ({
-      ...prev,
-      [zone]: { volume, target }
-    }));
   };
 
   if (showZoneGraphs) {
@@ -1031,6 +1034,7 @@ export default function ManagerDashboard() {
             <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
               <option>All</option>
               <option>Pending</option>
+              <option>Approved</option>
               <option>Partial</option>
               <option>Delivered</option>
               <option>Rejected</option>
@@ -1206,11 +1210,14 @@ export default function ManagerDashboard() {
           </thead>
           <tbody>
             {filteredOrders.map((o) => {
-              const displayDate = o.date || o.userDetails?.date || o.userDetails?.orderDate || "N/A";
+              const displayDate = formatDate(o.date || o.userDetails?.date || o.userDetails?.orderDate);
               
               const orderCategories = [...new Set(o.cart.map(item => getCategoryForPartNumber(item.partNumber)))];
               
               const fullCollectionMarked = hasFullCollection(o.id);
+              
+              // Check if buttons should be enabled - only for "Approved" status
+              const isApproved = o.status === "Approved" || o.status === "Partial";     
               
               return (
                 <tr key={o.id}>
@@ -1243,82 +1250,90 @@ export default function ManagerDashboard() {
                   </td>
                   <td>{o.status}</td>
                   <td>
-                    {collectionHistory[o.id] && collectionHistory[o.id].length > 0 ? (
-                      <div style={{ 
-                        display: "flex", 
-                        flexDirection: "column", 
-                        gap: "5px",
-                        maxWidth: "250px" 
-                      }}>
-                        {collectionHistory[o.id].map((entry, idx) => (
-                          <div 
-                            key={idx}
-                            style={{
-                              padding: "5px 8px",
-                              borderRadius: "4px",
-                              fontSize: "12px",
-                              backgroundColor: entry.type === "Partial" ? "#fff3cd" : "#d4edda",
-                              border: entry.type === "Partial" ? "1px solid #ffc107" : "1px solid #28a745",
-                              color: "#000",
-                            }}
-                          >
-                            <div style={{ fontWeight: "bold" }}>
-                              {entry.type === "Partial" ? "🟡 Partial" : "🟢 Full"} Collection
-                            </div>
-                            <div>{entry.collectedBy}</div>
-                            <div style={{ fontSize: "10px", color: "#666" }}>
-                              {entry.timestamp}
-                            </div>
+                    {(() => {
+                      const history = o.collectionHistory || [];
+                      
+                      if (history.length > 0) {
+                        return (
+                          <div style={{ 
+                            display: "flex", 
+                            flexDirection: "column", 
+                            gap: "5px",
+                            maxWidth: "250px" 
+                          }}>
+                            {history.map((entry, idx) => (
+                              <div 
+                                key={idx}
+                                style={{
+                                  padding: "5px 8px",
+                                  borderRadius: "4px",
+                                  fontSize: "12px",
+                                  backgroundColor: entry.type === "Partial" ? "#fff3cd" : "#d4edda",
+                                  border: entry.type === "Partial" ? "1px solid #ffc107" : "1px solid #28a745",
+                                  color: "#000",
+                                }}
+                              >
+                                <div style={{ fontWeight: "bold" }}>
+                                  {entry.type === "Partial" ? "🟡 Partial" : "🟢 Full"} Collection
+                                </div>
+                                <div>{entry.collectedBy}</div>
+                                <div style={{ fontSize: "10px", color: "#666" }}>
+                                  {entry.timestamp}
+                                </div>
+                              </div>
+                            ))}
+                            {!fullCollectionMarked && (o.status === "Partial" || o.status === "Delivered") && (
+                              <button
+                                className="rfid-btn"
+                                onClick={() => {
+                                  setWaitingForRfid(o.id);
+                                  setRfidInput("");
+                                }}
+                                style={{
+                                  backgroundColor: waitingForRfid === o.id ? "#ffc107" : "#007bff",
+                                  color: "#fff",
+                                  border: "none",
+                                  padding: "5px 10px",
+                                  borderRadius: "4px",
+                                  cursor: "pointer",
+                                  fontWeight: "bold",
+                                  marginTop: "5px",
+                                }}
+                              >
+                                {waitingForRfid === o.id ? "⏳ Waiting..." : "📡 Scan Again"}
+                              </button>
+                            )}
                           </div>
-                        ))}
-                        {!fullCollectionMarked && (o.status === "Partial" || o.status === "Delivered") && (
+                        );
+                      } else {
+                        return (
                           <button
                             className="rfid-btn"
                             onClick={() => {
-                              setWaitingForRfid(o.id);
-                              setRfidInput("");
+                              if (o.status === "Delivered" || o.status === "Partial") {
+                                setWaitingForRfid(o.id);
+                                setRfidInput("");
+                              }
                             }}
+                            disabled={o.status !== "Delivered" && o.status !== "Partial"}
                             style={{
-                              backgroundColor: waitingForRfid === o.id ? "#ffc107" : "#007bff",
+                              backgroundColor: 
+                                (o.status !== "Delivered" && o.status !== "Partial") ? "#6c757d" : 
+                                waitingForRfid === o.id ? "#ffc107" : "#007bff",
                               color: "#fff",
                               border: "none",
                               padding: "5px 10px",
                               borderRadius: "4px",
-                              cursor: "pointer",
+                              cursor: (o.status !== "Delivered" && o.status !== "Partial") ? "not-allowed" : "pointer",
                               fontWeight: "bold",
-                              marginTop: "5px",
+                              opacity: (o.status !== "Delivered" && o.status !== "Partial") ? 0.6 : 1,
                             }}
                           >
-                            {waitingForRfid === o.id ? "⏳ Waiting..." : "📡 Scan Again"}
+                            {waitingForRfid === o.id ? "⏳ Waiting..." : "📡 Scan ID"}
                           </button>
-                        )}
-                      </div>
-                    ) : (
-                      <button
-                        className="rfid-btn"
-                        onClick={() => {
-                          if (o.status === "Delivered" || o.status === "Partial") {
-                            setWaitingForRfid(o.id);
-                            setRfidInput("");
-                          }
-                        }}
-                        disabled={o.status !== "Delivered" && o.status !== "Partial"}
-                        style={{
-                          backgroundColor: 
-                            (o.status !== "Delivered" && o.status !== "Partial") ? "#6c757d" : 
-                            waitingForRfid === o.id ? "#ffc107" : "#007bff",
-                          color: "#fff",
-                          border: "none",
-                          padding: "5px 10px",
-                          borderRadius: "4px",
-                          cursor: (o.status !== "Delivered" && o.status !== "Partial") ? "not-allowed" : "pointer",
-                          fontWeight: "bold",
-                          opacity: (o.status !== "Delivered" && o.status !== "Partial") ? 0.6 : 1,
-                        }}
-                      >
-                        {waitingForRfid === o.id ? "⏳ Waiting..." : "📡 Scan ID"}
-                      </button>
-                    )}
+                        );
+                      }
+                    })()}
                   </td>
                   <td>
                     <button
@@ -1330,7 +1345,11 @@ export default function ManagerDashboard() {
                           : ""
                       }`}
                       onClick={() => openPopup(o)}
-                      disabled={o.status === "Rejected"}
+                      disabled={!isApproved}
+                      style={{
+                        opacity: !isApproved ? 0.5 : 1,
+                        cursor: !isApproved ? "not-allowed" : "pointer"
+                      }}
                     >
                       {o.status === "Partial"
                         ? "Partial"
@@ -1341,7 +1360,11 @@ export default function ManagerDashboard() {
                     <button
                       className="reject-btn"
                       onClick={() => updateStatus(o.id, true)}
-                      disabled={o.status === "Rejected" || o.status === "Delivered" || o.status === "Partial"}
+                      disabled={!isApproved}
+                      style={{
+                        opacity: !isApproved ? 0.5 : 1,
+                        cursor: !isApproved ? "not-allowed" : "pointer"
+                      }}
                     >
                       ❌ Reject
                     </button>

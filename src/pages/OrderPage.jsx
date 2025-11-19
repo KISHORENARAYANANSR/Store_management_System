@@ -8,7 +8,8 @@ export default function OrderPage() {
   const [userDetails, setUserDetails] = useState({
     name: "",
     empId: "",
-    dept: "",
+    dept: "VPP",
+    shop: "Trim & Chassis",
     zone: "",
     group: "",
     date: "",
@@ -26,12 +27,74 @@ export default function OrderPage() {
   const [materialSearch, setMaterialSearch] = useState("");
   const [ppeSearch, setPpeSearch] = useState("");
 
+  // State for stock and cost data from Excel
+  const [stockData, setStockData] = useState([]);
+  const [costData, setCostData] = useState([]);
+
+  // Load stock and cost data from localStorage
+  useEffect(() => {
+    const loadStockAndCostData = () => {
+      try {
+        const savedStockData = localStorage.getItem("savedStockData");
+        const savedCostData = localStorage.getItem("costData");
+        
+        if (savedStockData) {
+          setStockData(JSON.parse(savedStockData));
+          console.log("📊 Stock data loaded:", JSON.parse(savedStockData).length, "items");
+        }
+        
+        if (savedCostData) {
+          setCostData(JSON.parse(savedCostData));
+          console.log("💰 Cost data loaded:", JSON.parse(savedCostData).length, "items");
+        }
+      } catch (err) {
+        console.error("❌ Error loading stock/cost data:", err);
+      }
+    };
+
+    loadStockAndCostData();
+
+    // Listen for stock updates from dashboard
+    const handleStockUpdate = () => {
+      console.log("🔄 Stock updated, reloading...");
+      loadStockAndCostData();
+    };
+
+    window.addEventListener('stockUpdated', handleStockUpdate);
+    
+    return () => {
+      window.removeEventListener('stockUpdated', handleStockUpdate);
+    };
+  }, []);
+
   useEffect(() => {
     const savedCategory = window.orderLockedCategory;
     if (savedCategory) {
       setLockedCategory(savedCategory);
     }
   }, []);
+
+  // Helper function to get current stock for a product
+  const getCurrentStock = (partNumber) => {
+    const stockItem = stockData.find(
+      (item) => item.partNumber.toLowerCase() === partNumber.toLowerCase()
+    );
+    return stockItem ? stockItem.currentStock : 0;
+  };
+
+  // Helper function to get cost per unit for a product
+  const getCostPerUnit = (partNumber) => {
+    const costItem = costData.find(
+      (item) => item.partNumber.toLowerCase() === partNumber.toLowerCase()
+    );
+    return costItem ? costItem.costPerUnit : 0;
+  };
+
+  // Helper function to check if product is in stock
+  const isInStock = (partNumber, requestedQty) => {
+    const currentStock = getCurrentStock(partNumber);
+    return currentStock >= requestedQty;
+  };
 
   const lockCategory = (category) => {
     setLockedCategory(category);
@@ -44,17 +107,29 @@ export default function OrderPage() {
   };
 
   const addToCart = (product) => {
+    // Check stock before adding
+    if (!isInStock(product.partNumber, product.quantity)) {
+      alert(`⚠️ Out of Stock! Only ${getCurrentStock(product.partNumber)} units available for ${product.partNumber}`);
+      return;
+    }
+
     const existing = cart.find(
       (item) =>
         item.id === product.id &&
         item.partNumber.toLowerCase() === product.partNumber.toLowerCase()
     );
+    
     if (existing) {
+      const newQty = existing.quantity + product.quantity;
+      if (!isInStock(product.partNumber, newQty)) {
+        alert(`⚠️ Cannot add more! Only ${getCurrentStock(product.partNumber)} units available for ${product.partNumber}`);
+        return;
+      }
       setCart(
         cart.map((item) =>
           item.id === product.id &&
           item.partNumber.toLowerCase() === product.partNumber.toLowerCase()
-            ? { ...item, quantity: item.quantity + product.quantity }
+            ? { ...item, quantity: newQty }
             : item
         )
       );
@@ -65,6 +140,13 @@ export default function OrderPage() {
 
   const updateCartItem = (id, newQty) => {
     if (newQty < 1) return;
+    
+    const cartItem = cart.find(item => item.id === id);
+    if (cartItem && !isInStock(cartItem.partNumber, newQty)) {
+      alert(`⚠️ Out of Stock! Only ${getCurrentStock(cartItem.partNumber)} units available for ${cartItem.partNumber}`);
+      return;
+    }
+    
     setCart(
       cart.map((item) => (item.id === id ? { ...item, quantity: newQty } : item))
     );
@@ -93,9 +175,17 @@ export default function OrderPage() {
       return;
     }
 
-    if (!userDetails.name || !userDetails.empId || !userDetails.dept || !userDetails.zone || !userDetails.group) {
+    if (!userDetails.name || !userDetails.empId || !userDetails.dept || !userDetails.shop || !userDetails.zone || !userDetails.group) {
       alert("Please fill in all user details before placing order.");
       return;
+    }
+
+    // Final stock check before placing order
+    for (const item of cart) {
+      if (!isInStock(item.partNumber, item.quantity)) {
+        alert(`⚠️ Out of Stock! ${item.partNumber} - Only ${getCurrentStock(item.partNumber)} units available`);
+        return;
+      }
     }
 
     const orderDate = userDetails.date || new Date().toISOString().split("T")[0];
@@ -148,7 +238,7 @@ export default function OrderPage() {
   };
 
   const isUserDetailsValid =
-    userDetails.name && userDetails.empId && userDetails.dept && userDetails.zone && userDetails.group;
+    userDetails.name && userDetails.empId && userDetails.dept && userDetails.shop && userDetails.zone && userDetails.group;
 
   const materialProducts = products.filter(
     (p) =>
@@ -177,6 +267,78 @@ export default function OrderPage() {
   };
 
   const isCategoryVisible = (category) => !lockedCategory || lockedCategory === category;
+
+  // Enhanced product card component
+  const ProductCard = ({ product }) => {
+    const [quantity, setQuantity] = useState(1);
+    const currentStock = getCurrentStock(product.partNumber);
+    const costPerUnit = getCostPerUnit(product.partNumber);
+    const isStockAvailable = currentStock > 0;
+
+    const handleQuantityChange = (value) => {
+      const qty = parseInt(value) || 1;
+      if (qty > currentStock) {
+        alert(`⚠️ Only ${currentStock} units available!`);
+        setQuantity(currentStock);
+      } else {
+        setQuantity(qty);
+      }
+    };
+
+    return (
+      <div className={`product-card ${!isStockAvailable ? 'out-of-stock' : ''}`}>
+        <div className="product-header">
+          <h4>{product.partNumber}</h4>
+          {costPerUnit > 0 && (
+            <span className="product-price">₹{costPerUnit.toFixed(2)}</span>
+          )}
+        </div>
+        <p className="product-description">{product.description}</p>
+        
+        <div className="stock-info">
+          <span className={`stock-badge ${isStockAvailable ? 'in-stock' : 'out-of-stock'}`}>
+            {isStockAvailable ? (
+              <>
+                ✅ In Stock: <strong>{currentStock}</strong>
+              </>
+            ) : (
+              <>❌ Out of Stock</>
+            )}
+          </span>
+        </div>
+
+        {costPerUnit > 0 && quantity > 0 && (
+          <div className="total-price">
+            Total: ₹{(costPerUnit * quantity).toFixed(2)}
+          </div>
+        )}
+
+        <div className="card-actions">
+          <input
+            type="number"
+            min="1"
+            max={currentStock}
+            value={quantity}
+            onChange={(e) => handleQuantityChange(e.target.value)}
+            className="qty-input"
+            disabled={!isStockAvailable}
+          />
+          <button
+            onClick={() =>
+              addToCart({
+                ...product,
+                quantity: quantity,
+              })
+            }
+            disabled={!isStockAvailable || quantity > currentStock}
+            className={!isStockAvailable ? 'disabled-btn' : ''}
+          >
+            {isStockAvailable ? 'Add' : 'Out of Stock'}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="order-page">
@@ -223,6 +385,14 @@ export default function OrderPage() {
               setUserDetails({ ...userDetails, dept: e.target.value })
             }
           />
+          <input
+            type="text"
+            placeholder="Shop"
+            value={userDetails.shop}
+            onChange={(e) =>
+              setUserDetails({ ...userDetails, shop: e.target.value })
+            }
+          />
           <select
             value={userDetails.zone}
             onChange={(e) =>
@@ -257,7 +427,6 @@ export default function OrderPage() {
             <option value="EQ - Body">EQ - Body</option>
             <option value="VQA">VQA</option>
             <option value="Project">Project</option>
-
           </select>
 
           <select
@@ -319,6 +488,11 @@ export default function OrderPage() {
         <div className="product-section">
           <div className="page-header">
             <h2 className="page-heading">Material Order Page</h2>
+            {(stockData.length === 0 || costData.length === 0) && (
+              <div className="warning-banner">
+                ⚠️ Stock/Price data not available. Please upload Excel file from Dashboard.
+              </div>
+            )}
           </div>
 
           {lockedCategory && (
@@ -362,31 +536,7 @@ export default function OrderPage() {
                           .includes(materialSearch.toLowerCase())
                     )
                     .map((product) => (
-                      <div key={product.id} className="product-card">
-                        <h4>{product.partNumber}</h4>
-                        <p>{product.description}</p>
-                        <div className="card-actions">
-                          <input
-                            type="number"
-                            min="1"
-                            defaultValue={1}
-                            onChange={(e) =>
-                              (product.quantity = parseInt(e.target.value) || 1)
-                            }
-                            className="qty-input"
-                          />
-                          <button
-                            onClick={() =>
-                              addToCart({
-                                ...product,
-                                quantity: product.quantity || 1,
-                              })
-                            }
-                          >
-                            Add
-                          </button>
-                        </div>
-                      </div>
+                      <ProductCard key={product.id} product={product} />
                     ))}
                 </div>
               )}
@@ -427,31 +577,7 @@ export default function OrderPage() {
                           .includes(ppeSearch.toLowerCase())
                     )
                     .map((product) => (
-                      <div key={product.id} className="product-card">
-                        <h4>{product.partNumber}</h4>
-                        <p>{product.description}</p>
-                        <div className="card-actions">
-                          <input
-                            type="number"
-                            min="1"
-                            defaultValue={1}
-                            onChange={(e) =>
-                              (product.quantity = parseInt(e.target.value) || 1)
-                            }
-                            className="qty-input"
-                          />
-                          <button
-                            onClick={() =>
-                              addToCart({
-                                ...product,
-                                quantity: product.quantity || 1,
-                              })
-                            }
-                          >
-                            Add
-                          </button>
-                        </div>
-                      </div>
+                      <ProductCard key={product.id} product={product} />
                     ))}
                 </div>
               )}
@@ -527,22 +653,43 @@ export default function OrderPage() {
           {cart.length === 0 ? (
             <p>No items in cart</p>
           ) : (
-            cart.map((item) => (
-              <div key={item.id} className="cart-item">
-                <span>
-                  {item.partNumber} - {item.description}
-                </span>
-                <input
-                  type="number"
-                  min="1"
-                  value={item.quantity}
-                  onChange={(e) =>
-                    updateCartItem(item.id, parseInt(e.target.value) || 1)
-                  }
-                />
-                <button onClick={() => removeCartItem(item.id)}>Remove</button>
-              </div>
-            ))
+            <>
+              {cart.map((item) => {
+                const costPerUnit = getCostPerUnit(item.partNumber);
+                return (
+                  <div key={item.id} className="cart-item">
+                    <div className="cart-item-details">
+                      <span>
+                        {item.partNumber} - {item.description}
+                      </span>
+                      {costPerUnit > 0 && (
+                        <span className="cart-item-price">
+                          ₹{costPerUnit.toFixed(2)} × {item.quantity} = ₹{(costPerUnit * item.quantity).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      type="number"
+                      min="1"
+                      max={getCurrentStock(item.partNumber)}
+                      value={item.quantity}
+                      onChange={(e) =>
+                        updateCartItem(item.id, parseInt(e.target.value) || 1)
+                      }
+                    />
+                    <button onClick={() => removeCartItem(item.id)}>Remove</button>
+                  </div>
+                );
+              })}
+              {costData.length > 0 && (
+                <div className="cart-total">
+                  <strong>Total Amount: ₹{cart.reduce((total, item) => {
+                    const cost = getCostPerUnit(item.partNumber);
+                    return total + (cost * item.quantity);
+                  }, 0).toFixed(2)}</strong>
+                </div>
+              )}
+            </>
           )}
           <div className="cart-actions">
             <button onClick={() => setStep(1)}>Back</button>
